@@ -4,10 +4,15 @@
 package contractapi
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"log"
+	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -92,9 +97,30 @@ func NewChaincode(contracts ...ContractInterface) (*ContractChaincode, error) {
 	return cc, nil
 }
 
-// Start starts the chaincode in the fabric shim
+// Start starts the chaincode in client mode
 func (cc *ContractChaincode) Start() error {
 	return shim.Start(cc)
+}
+
+// StartServer the chaincode in server mode
+func (cc *ContractChaincode) StartServer() error {
+	tlsProps, err := getTLSProps()
+	if err != nil {
+		log.Panicf("Error creating getting TLS properties: %v", err)
+	}
+	// do we need these here?  nothing else seems to be logging
+	fmt.Printf("Creating Server\n")
+
+	server := &shim.ChaincodeServer{
+		CCID:     os.Getenv("CHAINCODE_ID"),
+		Address:  os.Getenv("CHAINCODE_SERVER_ADDRESS"),
+		CC:       cc,
+		TLSProps: tlsProps,
+	}
+
+	fmt.Printf("Starting server\n")
+	return server.Start()
+
 }
 
 // Init is called during Instantiate transaction after the chaincode container
@@ -407,4 +433,65 @@ func getCiMethods() []string {
 	}
 
 	return ciMethods
+}
+
+func getTLSProps() (shim.TLSProperties, error) {
+
+	tlsEnabled, err := strconv.ParseBool(os.Getenv("CORE_PEER_TLS_ENABLED"))
+	if err != nil {
+		tlsEnabled = false
+	}
+
+	if !tlsEnabled {
+		return shim.TLSProperties{Disabled: true}, nil
+	}
+
+	var key []byte
+	path, set := os.LookupEnv("CORE_TLS_CLIENT_KEY_FILE")
+	if set {
+		key, err = ioutil.ReadFile(path)
+		if err != nil {
+			return shim.TLSProperties{}, fmt.Errorf("failed to read private key file: %s", err)
+		}
+
+	} else {
+		data, err := ioutil.ReadFile(os.Getenv("CORE_TLS_CLIENT_KEY_PATH"))
+		if err != nil {
+			return shim.TLSProperties{}, fmt.Errorf("failed to read private key file: %s", err)
+		}
+		key, err = base64.StdEncoding.DecodeString(string(data))
+		if err != nil {
+			return shim.TLSProperties{}, fmt.Errorf("failed to decode private key file: %s", err)
+		}
+	}
+
+	var cert []byte
+	path, set = os.LookupEnv("CORE_TLS_CLIENT_CERT_FILE")
+	if set {
+		cert, err = ioutil.ReadFile(path)
+		if err != nil {
+			return shim.TLSProperties{}, fmt.Errorf("failed to read public key file: %s", err)
+		}
+	} else {
+		data, err := ioutil.ReadFile(os.Getenv("CORE_TLS_CLIENT_CERT_PATH"))
+		if err != nil {
+			return shim.TLSProperties{}, fmt.Errorf("failed to read public key file: %s", err)
+		}
+		cert, err = base64.StdEncoding.DecodeString(string(data))
+		if err != nil {
+			return shim.TLSProperties{}, fmt.Errorf("failed to decode public key file: %s", err)
+		}
+	}
+
+	root, err := ioutil.ReadFile(os.Getenv("CORE_PEER_TLS_ROOTCERT_FILE"))
+	if err != nil {
+		return shim.TLSProperties{}, fmt.Errorf("failed to read root cert file: %s", err)
+	}
+
+	return shim.TLSProperties{
+		Disabled:      false,
+		Key:           key,
+		Cert:          cert,
+		ClientCACerts: root,
+	}, nil
 }
